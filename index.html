@@ -666,7 +666,25 @@ img.logo-white{filter:brightness(0) invert(1)}
   img.logo-invert,img.logo-white{filter:none!important}
 }
 </style>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#1D5C63">
+<meta name="application-name" content="Vencimentos">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Vencimentos">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/favicon.png">
+<style>
+#ctrlvenc-install{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom));z-index:9999;display:none;align-items:center;gap:8px;padding:10px 16px;border:0;border-radius:999px;background:var(--accent,#1D5C63);color:var(--accent-ink,#fff);font:600 14px/1 "Instrument Sans",system-ui,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.18);cursor:pointer}
+#ctrlvenc-install.show{display:inline-flex}
+#ctrlvenc-ios{position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:10000;display:none;padding:14px 16px;border-radius:14px;background:var(--accent,#1D5C63);color:var(--accent-ink,#fff);font:500 14px/1.45 "Instrument Sans",system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.25)}
+#ctrlvenc-ios.show{display:block}
+#ctrlvenc-ios button{float:right;margin-left:8px;border:0;background:transparent;color:inherit;font-size:18px;cursor:pointer}
+@media print{#ctrlvenc-install,#ctrlvenc-ios{display:none!important}}
+</style>
 </head>
+
 <body>
 <div id="root"></div>
 <dialog id="dlg"></dialog>
@@ -822,7 +840,7 @@ const Store = {
     if (S.backend === "cloud"){ try { await S.db.doc("config/app").set(next); } catch(e){ throw dbError(e); } }
     else {
       if (S.backend === "local") await idbTx("config", "readwrite", st => st.put({ id: "app", ...next }));
-      if (S.backend === "ls") try { localStorage.setItem("vc:cfg", JSON.stringify(next)); } catch(e){ throw new Error("O espaço de armazenamento deste navegador acabou."); }
+      if (S.backend === "ls") try { localStorage.setItem("ctrlvenc:cfg", JSON.stringify(next)); } catch(e){ throw new Error("O espaço de armazenamento deste navegador acabou."); }
       S.cfg = next; onCfg(); render(true);
     }
   },
@@ -838,14 +856,14 @@ const Store = {
     }
     const id = newId(); const blob = new Blob([file], { type });
     if (S.backend === "local"){ try { await idbTx("files", "readwrite", st => st.put({ id, blob, name: file.name })); } catch(e){ throw new Error("O espaço do navegador está cheio. Remova arquivos antigos."); } }
-    if (S.backend === "ls"){ try { localStorage.setItem("vc:file:" + id, await blobToDataURL(blob)); } catch(e){ throw new Error("Não há espaço para este arquivo neste navegador. Abra o sistema no Chrome ou Edge para anexar arquivos maiores."); } }
+    if (S.backend === "ls"){ try { localStorage.setItem("ctrlvenc:file:" + id, await blobToDataURL(blob)); } catch(e){ throw new Error("Não há espaço para este arquivo neste navegador. Abra o sistema no Chrome ou Edge para anexar arquivos maiores."); } }
     S.urls[id] = URL.createObjectURL(blob); return id;
   },
   async delFile(id){
     if (!id) return;
     try {
       if (S.backend === "cloud"){ if (S.assets) await S.assets.delete(id); }
-      else { if (S.backend === "local") await idbTx("files", "readwrite", st => st.delete(id)); if (S.backend === "ls") localStorage.removeItem("vc:file:" + id); if (S.urls[id]) URL.revokeObjectURL(S.urls[id]); delete S.urls[id]; }
+      else { if (S.backend === "local") await idbTx("files", "readwrite", st => st.delete(id)); if (S.backend === "ls") localStorage.removeItem("ctrlvenc:file:" + id); if (S.urls[id]) URL.revokeObjectURL(S.urls[id]); delete S.urls[id]; }
     } catch(e){}
   },
   url(id){ return !id ? "#" : S.backend === "cloud" ? "/_blob/" + id : (S.urls[id] || "#"); }
@@ -874,13 +892,13 @@ async function boot(){
   S.downloads = { save: async ({ filename, data }) => saveFileLocal(filename, data instanceof Blob ? data : new Blob([data], { type: "text/plain;charset=utf-8" })) };
   onCfg(); S.ready = true; afterReady();
 }
-function lsSave(coll){ localStorage.setItem("vc:data:" + coll, JSON.stringify(S.data[coll])); }
+function lsSave(coll){ localStorage.setItem("ctrlvenc:data:" + coll, JSON.stringify(S.data[coll])); }
 async function lsInit(){
   try {
-    localStorage.setItem("vc:test", "1"); if (localStorage.getItem("vc:test") !== "1") return false; localStorage.removeItem("vc:test");
-    for (const c of COLLS){ const v = localStorage.getItem("vc:data:" + c); S.data[c] = v ? JSON.parse(v) : []; }
-    const cfg = localStorage.getItem("vc:cfg"); S.cfg = cfg ? JSON.parse(cfg) : {};
-    for (let i = 0; i < localStorage.length; i++){ const k = localStorage.key(i); if (k && k.startsWith("vc:file:")) try { S.urls[k.slice(8)] = URL.createObjectURL(await (await fetch(localStorage.getItem(k))).blob()); } catch(e){} }
+    localStorage.setItem("ctrlvenc:test", "1"); if (localStorage.getItem("ctrlvenc:test") !== "1") return false; localStorage.removeItem("ctrlvenc:test");
+    for (const c of COLLS){ const v = localStorage.getItem("ctrlvenc:data:" + c); S.data[c] = v ? JSON.parse(v) : []; }
+    const cfg = localStorage.getItem("ctrlvenc:cfg"); S.cfg = cfg ? JSON.parse(cfg) : {};
+    for (let i = 0; i < localStorage.length; i++){ const k = localStorage.key(i); if (k && k.startsWith("ctrlvenc:file:")) try { S.urls[k.slice(14)] = URL.createObjectURL(await (await fetch(localStorage.getItem(k))).blob()); } catch(e){} }
     return true;
   } catch(e){ return false; }
 }
@@ -890,7 +908,7 @@ function saveFileLocal(filename, blob){
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 function afterReady(){
-  const id = SS.get("vc-user") || LS.get("vc-user");
+  const id = SS.get("ctrlvenc-user") || LS.get("ctrlvenc-user");
   if (id && S.data.users.some(u => u.id === id && u.active !== false)) S.userId = id;
   render(true);
   if (me()) setTimeout(autoSend, 1500);
@@ -929,9 +947,9 @@ function themedLogo(dark){
   return { src: S.logoUrl, cls: m === "white" ? "logo-white" : m === "none" ? "" : "logo-invert" };
 }
 function logoImg(alt){ const l = themedLogo(); return l ? `<img src="${esc(l.src)}" class="${l.cls}" alt="${esc(alt)}">` : ""; }
-function applyTheme(){ const t = LS.get("vc-theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; else document.documentElement.removeAttribute("data-theme"); }
+function applyTheme(){ const t = LS.get("ctrlvenc-theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; else document.documentElement.removeAttribute("data-theme"); }
 const isDark = () => { const t = document.documentElement.dataset.theme; return t ? t === "dark" : window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches; };
-function toggleTheme(){ LS.set("vc-theme", isDark() ? "light" : "dark"); applyTheme(); render(true); }
+function toggleTheme(){ LS.set("ctrlvenc-theme", isDark() ? "light" : "dark"); applyTheme(); render(true); }
 const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
 async function toggleFullscreen(){
   try {
@@ -1004,17 +1022,17 @@ async function doSetup(form){
   const salt = newSalt(); const id = newId();
   try { await Store.put("users", { id, name, login, email, profile: "admin", active: true, salt, hash: hashPw(pw, salt), createdAt: new Date().toISOString() }); }
   catch(e){ return authError(e.message); }
-  S.userId = id; SS.set("vc-user", id); S.tab = "painel"; render(true); toast("Administrador criado. Bem-vindo!");
+  S.userId = id; SS.set("ctrlvenc-user", id); S.tab = "painel"; render(true); toast("Administrador criado. Bem-vindo!");
 }
 function doLogin(form){
   const login = String(form.elements.login.value || "").trim().toLowerCase(), pw = form.elements.pw.value;
   const u = S.data.users.find(x => (x.login || "").toLowerCase() === login);
   if (!u || u.hash !== hashPw(pw, u.salt)) return authError("Usuário ou senha incorretos.");
   if (u.active === false) return authError("Este usuário está inativo. Fale com um administrador.");
-  S.userId = u.id; SS.set("vc-user", u.id); LS.set("vc-user", form.elements.remember.checked ? u.id : null);
+  S.userId = u.id; SS.set("ctrlvenc-user", u.id); LS.set("ctrlvenc-user", form.elements.remember.checked ? u.id : null);
   S.tab = firstTab(); render(true); setTimeout(autoSend, 800);
 }
-function logout(){ S.userId = null; SS.set("vc-user", null); LS.set("vc-user", null); render(true); }
+function logout(){ S.userId = null; SS.set("ctrlvenc-user", null); LS.set("ctrlvenc-user", null); render(true); }
 
 /* ================= modelo ================= */
 const STATUS = {
@@ -1685,10 +1703,10 @@ function restorePick(){
         if (data.config) await idbTx("config", "readwrite", s => s.put({ id: "app", ...data.config }));
         await idbTx("files", "readwrite", s => fileRows.forEach(r => s.put(r)));
       } else if (S.backend === "ls"){
-        Object.keys(localStorage).filter(k => k.startsWith("vc:")).forEach(k => localStorage.removeItem(k));
-        COLLS.forEach(c => localStorage.setItem("vc:data:" + c, JSON.stringify(map[c] || [])));
-        localStorage.setItem("vc:cfg", JSON.stringify(data.config || {}));
-        for (const x of data.files || []) try { localStorage.setItem("vc:file:" + x.id, x.data); } catch(e){}
+        Object.keys(localStorage).filter(k => k.startsWith("ctrlvenc:")).forEach(k => localStorage.removeItem(k));
+        COLLS.forEach(c => localStorage.setItem("ctrlvenc:data:" + c, JSON.stringify(map[c] || [])));
+        localStorage.setItem("ctrlvenc:cfg", JSON.stringify(data.config || {}));
+        for (const x of data.files || []) try { localStorage.setItem("ctrlvenc:file:" + x.id, x.data); } catch(e){}
       }
       Object.values(S.urls).forEach(u => URL.revokeObjectURL(u)); S.urls = {};
       COLLS.forEach(c => { S.data[c] = map[c] || []; }); S.cfg = data.config || {};
@@ -2183,5 +2201,31 @@ setInterval(() => { const t = todayISO(); if (t !== S.day){ S.day = t; if (me())
 boot();
 })();
 </script>
+<button id="ctrlvenc-install" type="button" aria-label="Instalar o app">&#x2B07;&#xFE0E; Instalar app</button>
+<div id="ctrlvenc-ios" role="dialog" aria-live="polite"><button type="button" aria-label="Fechar">&times;</button><b>Instalar no iPhone/iPad:</b> toque em <b>Compartilhar</b> (quadrado com seta) e depois em <b>Adicionar à Tela de Início</b>.</div>
+<script>
+(function(){
+  var standalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+  if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+    window.addEventListener("load", function(){ navigator.serviceWorker.register("sw.js", { scope: "./" }).catch(function(){}); });
+  }
+  if (standalone) return;
+  var btn = document.getElementById("ctrlvenc-install"), ios = document.getElementById("ctrlvenc-ios"), deferred = null;
+  window.addEventListener("beforeinstallprompt", function(e){ e.preventDefault(); deferred = e; btn.classList.add("show"); });
+  btn.addEventListener("click", function(){
+    if (!deferred) return;
+    deferred.prompt();
+    deferred.userChoice.finally(function(){ deferred = null; btn.classList.remove("show"); });
+  });
+  window.addEventListener("appinstalled", function(){ btn.classList.remove("show"); });
+  var isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  var seen = false; try { seen = localStorage.getItem("ctrlvenc-ios-hint") === "1"; } catch(e){}
+  if (isIOS && !seen) {
+    ios.classList.add("show");
+    ios.querySelector("button").addEventListener("click", function(){ ios.classList.remove("show"); try { localStorage.setItem("ctrlvenc-ios-hint", "1"); } catch(e){} });
+  }
+})();
+</script>
 </body>
+
 </html>

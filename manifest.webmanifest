@@ -1,0 +1,22 @@
+{
+  "id": "/controle-vencimentos/",
+  "name": "Controle de Vencimentos",
+  "short_name": "Vencimentos",
+  "description": "Controle de vencimentos, prazos e documentos.",
+  "lang": "pt-BR",
+  "dir": "ltr",
+  "start_url": "/controle-vencimentos/?source=pwa",
+  "scope": "/controle-vencimentos/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#F2F5F4",
+  "theme_color": "#1D5C63",
+  "categories": ["productivity", "business", "utilities"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
