@@ -2,7 +2,7 @@
    Escopo restrito a /controle-vencimentos/ e caches com prefixo próprio,
    para não interferir nos outros apps publicados em eguilherme88-wq.github.io. */
 const PREFIX = "ctrlvenc-";
-const VERSION = "v2";
+const VERSION = "v3";
 const CACHE = PREFIX + VERSION;
 const CORE = [
   "./",
@@ -37,17 +37,22 @@ self.addEventListener("fetch", e => {
   if (req.method !== "GET") return;
   const url = new URL(req.url);
 
-  // Página: rede primeiro (pega atualizações), cache se estiver offline.
-  if (req.mode === "navigate") {
+  // Página principal: rede primeiro (pega atualizações), cache se estiver offline.
+  const root = new URL("./", self.registration.scope).pathname;
+  const isPage = url.origin === location.origin && (url.pathname === root || url.pathname === root + "index.html");
+  if (req.mode === "navigate" && isPage) {
     e.respondWith(
       fetch(req).then(res => {
-        const copy = res.clone();
-        caches.open(CACHE).then(c => c.put("./index.html", copy));
+        if (res && res.ok && (res.headers.get("content-type") || "").includes("text/html")) {
+          const copy = res.clone();
+          caches.open(CACHE).then(c => c.put("./index.html", copy));
+        }
         return res;
       }).catch(() => caches.match("./index.html"))
     );
     return;
   }
+  if (req.mode === "navigate") return;
 
   const sameApp = url.origin === location.origin && url.pathname.startsWith(new URL("./", self.registration.scope).pathname);
   const fonts = url.hostname === "fonts.googleapis.com" || url.hostname === "fonts.gstatic.com";
