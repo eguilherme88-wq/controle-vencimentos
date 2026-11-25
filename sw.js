@@ -2,7 +2,7 @@
    Escopo restrito a /controle-vencimentos/ e caches com prefixo próprio,
    para não interferir nos outros apps publicados em eguilherme88-wq.github.io. */
 const PREFIX = "ctrlvenc-";
-const VERSION = "v3";
+const VERSION = "v4";
 const CACHE = PREFIX + VERSION;
 const CORE = [
   "./",
@@ -42,7 +42,7 @@ self.addEventListener("fetch", e => {
   const isPage = url.origin === location.origin && (url.pathname === root || url.pathname === root + "index.html");
   if (req.mode === "navigate" && isPage) {
     e.respondWith(
-      fetch(req).then(res => {
+      fetch(new Request(req.url, { cache: "no-cache", credentials: "same-origin" })).then(res => {
         if (res && res.ok && (res.headers.get("content-type") || "").includes("text/html")) {
           const copy = res.clone();
           caches.open(CACHE).then(c => c.put("./index.html", copy));
