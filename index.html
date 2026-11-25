@@ -1126,6 +1126,23 @@ async function fbRestore(map, config, fileRows){
   if (n) await batch.commit();
   await fbWriteAll(map, config, fileRows);
 }
+function fbIsOwner(){ const u = S.fb && S.fbUser; return !!(u && u.emailVerified && FB_OWNERS.includes(String(u.email || "").toLowerCase())); }
+function fbAdminResetDialog(){
+  const users = sortBy(S.data.users.filter(u => u.active !== false));
+  openDialog("Redefinir senha do sistema", `
+    <p class="hint" style="margin-top:0">Disponível para o dono da conta da nuvem (${esc(S.fbUser.email)}).</p>
+    <div class="f"><label for="raUser">Usuário</label><select id="raUser" name="user">${users.map(u => `<option value="${esc(u.id)}">${esc(u.name)} — ${esc(u.login)}${u.profile === "admin" ? " (Administrador)" : ""}</option>`).join("")}</select></div>
+    <div class="grid2"><div class="f"><label for="raPw">Nova senha</label><input id="raPw" name="pw" type="password" autocomplete="new-password"><span class="hint">Mínimo de 6 caracteres.</span></div>
+    <div class="f"><label for="raPw2">Confirmar senha</label><input id="raPw2" name="pw2" type="password" autocomplete="new-password"></div></div>`,
+    `<button type="button" class="btn" data-close>Cancelar</button><button type="submit" class="btn primary">Salvar nova senha</button>`,
+    async form => {
+      const u = S.data.users.find(x => x.id === form.elements.user.value); if (!u) throw new Error("Escolha um usuário.");
+      const pw = form.elements.pw.value; if (pw.length < 6) throw new Error("A senha precisa ter pelo menos 6 caracteres.");
+      if (pw !== form.elements.pw2.value) throw new Error("As senhas não conferem.");
+      const salt = newSalt(); await Store.put("users", { ...u, salt, hash: hashPw(pw, salt) });
+      toast(`Senha de ${u.login} redefinida. Entre com o usuário "${u.login}".`, 6000);
+    });
+}
 async function fbLoadAllFiles(){
   const ids = new Set([S.cfg.logoId, S.cfg.logoDarkId, ...S.data.documents.map(d => d.assetId), ...S.data.records.map(d => d.assetId)].filter(Boolean));
   await Promise.all([...ids].map(id => fbLoadFile(id).catch(() => null)));
@@ -1265,11 +1282,11 @@ function screenLogin(){
   <div class="auth"><form class="auth-card" id="loginForm" novalidate>
     ${authBrand()}
     <p class="err" id="authErr" hidden></p>
-    <div class="f"><label for="liLogin">Usuário</label><input id="liLogin" name="login" autocomplete="username" autocapitalize="none" required></div>
+    <div class="f"><label for="liLogin">Usuário ou e-mail</label><input id="liLogin" name="login" autocomplete="username" autocapitalize="none" required></div>
     <div class="f"><label for="liPw">Senha</label><input id="liPw" name="pw" type="password" autocomplete="current-password" required></div>
     <label class="check"><input type="checkbox" name="remember"> Manter conectado neste computador</label>
     <button class="btn primary" type="submit" style="width:100%;justify-content:center">Entrar</button>
-    <p class="hint" style="margin:14px 0 0">Esqueceu a senha? Peça a um administrador para definir uma nova.</p>
+    <p class="hint" style="margin:14px 0 0">Esqueceu a senha? Peça a um administrador para definir uma nova.${fbIsOwner() ? ` <button type="button" class="btn sm link" data-act="fbAdminReset" style="padding:0">Redefinir senha de um usuário</button>` : ""}</p>
   </form></div>
   <footer class="foot"><div class="wrap">${esc(copyright())}</div></footer>`;
 }
@@ -1289,8 +1306,9 @@ async function doSetup(form){
 }
 function doLogin(form){
   const login = String(form.elements.login.value || "").trim().toLowerCase(), pw = form.elements.pw.value;
-  const u = S.data.users.find(x => (x.login || "").toLowerCase() === login);
-  if (!u || u.hash !== hashPw(pw, u.salt)) return authError("Usuário ou senha incorretos.");
+  const cands = S.data.users.filter(x => (x.login || "").toLowerCase() === login || (login.includes("@") && (x.email || "").toLowerCase() === login));
+  const u = cands.find(x => x.hash === hashPw(pw, x.salt));
+  if (!u) return authError(S.fb ? "Usuário ou senha do sistema incorretos. Use o usuário criado no primeiro acesso (não a senha da conta da nuvem)." : "Usuário ou senha incorretos.");
   if (u.active === false) return authError("Este usuário está inativo. Fale com um administrador.");
   S.userId = u.id; SS.set("ctrlvenc-user", u.id); LS.set("ctrlvenc-user", form.elements.remember.checked ? u.id : null);
   S.tab = firstTab(); render(true); setTimeout(autoSend, 800);
@@ -2421,6 +2439,7 @@ document.addEventListener("click", ev => {
     case "fbSignOut": if (S.gate || confirm("Desconectar este aparelho da nuvem? Para usar de novo será preciso entrar com a conta da nuvem.")){ logout(); S.auth.signOut(); } break;
     case "fbRetry": S.auth.currentUser && S.auth.currentUser.getIdToken(true).finally(() => fbAuthChanged(S.auth.currentUser)); break;
     case "fbMigrate": fbMigrate(); break;
+    case "fbAdminReset": if (fbIsOwner()) fbAdminResetDialog(); break;
     case "fbSkip": fbSkipMigrate(); break;
     case "myPw": myPwDialog(); break;
     case "newDoc": if (!guard("doc.criar")) break; if (!typesOf("doc").length){ toast("Cadastre primeiro os tipos de documento."); S.tab = "tipos"; render(); } else if (!S.data.employees.length && !S.data.thirds.length){ toast("Cadastre primeiro um funcionário ou terceiro."); } else { const pk = S.tab === "documentos" && S.f.docs.person ? S.f.docs.person.split(":") : null; docDialog(null, pk ? { kind: pk[0], id: pk[1] } : null); } break;

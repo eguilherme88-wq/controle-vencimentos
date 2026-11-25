@@ -2,7 +2,7 @@
    Escopo restrito a /controle-vencimentos/ e caches com prefixo próprio,
    para não interferir nos outros apps publicados em eguilherme88-wq.github.io. */
 const PREFIX = "ctrlvenc-";
-const VERSION = "v4";
+const VERSION = "v5";
 const CACHE = PREFIX + VERSION;
 const CORE = [
   "./",
