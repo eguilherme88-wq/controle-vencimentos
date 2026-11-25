@@ -2,7 +2,7 @@
    Escopo restrito a /controle-vencimentos/ e caches com prefixo próprio,
    para não interferir nos outros apps publicados em eguilherme88-wq.github.io. */
 const PREFIX = "ctrlvenc-";
-const VERSION = "v1";
+const VERSION = "v2";
 const CACHE = PREFIX + VERSION;
 const CORE = [
   "./",
@@ -13,7 +13,10 @@ const CORE = [
   "./icons/maskable-192.png",
   "./icons/maskable-512.png",
   "./icons/apple-touch-icon.png",
-  "./icons/favicon.png"
+  "./icons/favicon.png",
+  "./vendor/firebase/firebase-app-compat.js",
+  "./vendor/firebase/firebase-auth-compat.js",
+  "./vendor/firebase/firebase-firestore-compat.js"
 ];
 
 self.addEventListener("install", e => {

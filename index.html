@@ -689,6 +689,9 @@ img.logo-white{filter:brightness(0) invert(1)}
 <div id="root"></div>
 <dialog id="dlg"></dialog>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="vendor/firebase/firebase-app-compat.js"></script>
+<script src="vendor/firebase/firebase-auth-compat.js"></script>
+<script src="vendor/firebase/firebase-firestore-compat.js"></script>
 <script>
 (function(){
 "use strict";
@@ -816,6 +819,7 @@ const Store = {
   async put(coll, row){
     if (S.readonly) throw new Error("Você está em modo de leitura.");
     const { id, ...data } = row;
+    if (S.fb){ fbBg(S.db.collection(coll).doc(id).set(data)); localUpsert(coll, row); render(); return; }
     if (S.backend === "cloud"){
       try { await S.db.collection(coll).doc(id).set(data); }
       catch(e){
@@ -831,12 +835,14 @@ const Store = {
   },
   async del(coll, id){
     if (S.readonly) throw new Error("Você está em modo de leitura.");
+    if (S.fb){ fbBg(S.db.collection(coll).doc(id).delete()); S.data[coll] = S.data[coll].filter(x => x.id !== id); render(); return; }
     if (S.backend === "cloud"){ try { await S.db.collection(coll).doc(id).delete(); } catch(e){ throw new Error("Não foi possível excluir. Tente de novo."); } }
     else { if (S.backend === "local") await idbTx(coll, "readwrite", st => st.delete(id)); S.data[coll] = S.data[coll].filter(x => x.id !== id); if (S.backend === "ls") try { lsSave(coll); } catch(e){} render(); }
   },
   async putCfg(patch){
     if (S.readonly) throw new Error("Você está em modo de leitura.");
     const next = { ...S.cfg, ...patch };
+    if (S.fb){ fbBg(S.db.doc("config/app").set(next)); S.cfg = next; await fbPreloadLogos(); onCfg(); render(true); return; }
     if (S.backend === "cloud"){ try { await S.db.doc("config/app").set(next); } catch(e){ throw dbError(e); } }
     else {
       if (S.backend === "local") await idbTx("config", "readwrite", st => st.put({ id: "app", ...next }));
@@ -866,8 +872,264 @@ const Store = {
       else { if (S.backend === "local") await idbTx("files", "readwrite", st => st.delete(id)); if (S.backend === "ls") localStorage.removeItem("ctrlvenc:file:" + id); if (S.urls[id]) URL.revokeObjectURL(S.urls[id]); delete S.urls[id]; }
     } catch(e){}
   },
-  url(id){ return !id ? "#" : S.backend === "cloud" ? "/_blob/" + id : (S.urls[id] || "#"); }
+  url(id){ return !id ? "#" : S.fb ? (S.urls[id] || "#arquivo:" + id) : S.backend === "cloud" ? "/_blob/" + id : (S.urls[id] || "#"); }
 };
+
+/* ================= nuvem (Firebase) ================= */
+const FB_CONFIG = {
+  apiKey: "AIzaSyAfV5OrMtXqQd63J9raXAlGvh265KKQ9YA",
+  authDomain: "controle-vencimentos-19862.firebaseapp.com",
+  projectId: "controle-vencimentos-19862",
+  storageBucket: "controle-vencimentos-19862.firebasestorage.app",
+  messagingSenderId: "572138279211",
+  appId: "1:572138279211:web:55fd8ad1093eb1aeb5f56e"
+};
+const FB_OWNERS = ["eguilherme88@gmail.com"];
+const FB_CHUNK = 700000, FB_MAX_FILE = 5 * 1024 * 1024;
+const okUrl = u => !!u && u.charAt(0) !== "#";
+const fbWanted = () => !!(window.firebase && firebase.initializeApp) && /^https?:$/.test(location.protocol) && LS.get("ctrlvenc-mode") !== "local";
+function fbErr(e){
+  const c = (e && e.code) || "";
+  const m = {
+    "auth/invalid-credential": "E-mail ou senha incorretos.", "auth/wrong-password": "E-mail ou senha incorretos.", "auth/user-not-found": "E-mail ou senha incorretos.",
+    "auth/invalid-email": "O e-mail não é válido.", "auth/email-already-in-use": "Já existe uma conta com este e-mail. Use Entrar.",
+    "auth/weak-password": "A senha precisa ter pelo menos 6 caracteres.", "auth/too-many-requests": "Muitas tentativas seguidas. Aguarde alguns minutos e tente de novo.",
+    "auth/network-request-failed": "Sem conexão com a internet. Verifique a rede e tente de novo.", "auth/missing-password": "Informe a senha.",
+    "permission-denied": "Sem permissão no banco de dados para esta conta.", "unavailable": "Sem conexão com o banco de dados. As alterações serão enviadas quando a internet voltar.",
+    "resource-exhausted": "O limite gratuito do banco de dados foi atingido por hoje.", "invalid-argument": "Os dados são grandes demais para salvar."
+  };
+  return m[c] || "Não foi possível concluir. Tente de novo." + (c ? " (" + c + ")" : "");
+}
+const fbBg = p => { if (p && p.catch) p.catch(e => toast(fbErr(e), 6000)); return p; };
+function fbStop(){ (S.unsubs || []).forEach(f => { try { f(); } catch(e){} }); S.unsubs = []; clearTimeout(S.fbTimer); }
+
+async function fbBoot(){
+  S.fb = true; S.backend = "cloud"; S.unsubs = []; S.cloudAccess = { emails: [] };
+  if (!firebase.apps.length) firebase.initializeApp(FB_CONFIG);
+  const db = firebase.firestore();
+  try { db.settings({ ignoreUndefinedProperties: true, merge: true }); } catch(e){}
+  try { await db.enablePersistence({ synchronizeTabs: true }); } catch(e){}
+  S.db = db; S.auth = firebase.auth(); S.assets = fbAssets;
+  S.downloads = { save: async ({ filename, data }) => saveFileLocal(filename, data instanceof Blob ? data : new Blob([data], { type: "text/plain;charset=utf-8" })) };
+  S.auth.onAuthStateChanged(u => fbAuthChanged(u));
+}
+function fbReset(){
+  fbStop(); S.ready = false; S.userId = null; S.cfg = {}; COLLS.forEach(c => { S.data[c] = []; });
+  Object.values(S.urls).forEach(u => { try { URL.revokeObjectURL(u); } catch(e){} }); S.urls = {}; S.logoKey = "~"; S.loading = {};
+}
+function fbAuthChanged(u){
+  fbReset(); S.fbUser = u || null;
+  if (!u){ S.gate = "login"; render(true); return; }
+  if (!u.emailVerified){ S.gate = "verify"; render(true); return; }
+  S.gate = null; render(true); fbSubscribe();
+}
+function fbSubscribe(){
+  const db = S.db, pending = new Set([...COLLS, "config"]);
+  const denied = e => { if (e && e.code === "permission-denied"){ fbStop(); S.gate = "denied"; render(true); return true; } return false; };
+  const done = k => { if (pending.delete(k) && !pending.size){ clearTimeout(S.fbTimer); S.ready = true; fbAfterReady(); } else if (S.ready) render(); };
+  // offline: depois de alguns segundos usa o que estiver no cache do aparelho
+  S.fbTimer = setTimeout(() => { if (!S.ready && !S.gate){ pending.clear(); S.ready = true; fbAfterReady(); } }, 6000);
+  const opts = { includeMetadataChanges: true };
+  COLLS.forEach(c => S.unsubs.push(db.collection(c).onSnapshot(opts, snap => {
+    S.data[c] = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    if (!snap.metadata.fromCache || S.ready) done(c);
+  }, e => { if (!denied(e)) done(c); })));
+  S.unsubs.push(db.doc("config/app").onSnapshot(opts, async s => {
+    S.cfg = s.exists ? { ...s.data() } : {};
+    if (!s.metadata.fromCache || S.ready){ await fbPreloadLogos(); onCfg(); done("config"); if (S.ready) render(true); }
+  }, e => { if (!denied(e)) done("config"); }));
+  S.unsubs.push(db.doc("acesso/lista").onSnapshot(s => { S.cloudAccess = s.exists ? { emails: [], ...s.data() } : { emails: [] }; if (S.ready && S.tab === "config") render(); }, () => {}));
+}
+async function fbPreloadLogos(){
+  const ids = [S.cfg.logoId, S.cfg.logoDarkId].filter(Boolean);
+  await Promise.all(ids.map(id => fbLoadFile(id).catch(() => null)));
+}
+async function fbAfterReady(){
+  await fbPreloadLogos(); onCfg();
+  if (!S.data.users.length && LS.get("ctrlvenc-migr") !== (S.fbUser && S.fbUser.uid)){
+    try {
+      const local = await fbReadLocal();
+      if (local && local.users.length){ S.localCopy = local; S.gate = "migrate"; render(true); return; }
+    } catch(e){}
+  }
+  afterReady();
+}
+async function fbReadLocal(){
+  if (!window.indexedDB) return null;
+  const has = await new Promise(res => { const r = indexedDB.open("controle-vencimentos"); r.onsuccess = () => { const db = r.result; const ok = db.objectStoreNames.contains("users"); db.close(); res(ok); }; r.onerror = () => res(false); r.onupgradeneeded = () => { try { r.transaction.abort(); } catch(e){} res(false); }; });
+  if (!has) return null;
+  S.idb = await idbOpen();
+  const out = { files: [] };
+  for (const c of COLLS) out[c] = await idbAll(c).catch(() => []);
+  const cfg = await idbTx("config", "readonly", st => st.get("app")).catch(() => null);
+  if (cfg){ const { id, ...rest } = cfg; out.config = rest; } else out.config = {};
+  out.files = await idbAll("files").catch(() => []);
+  return out;
+}
+async function fbWriteAll(map, config, files){
+  const db = S.db; let batch = db.batch(), n = 0;
+  const flush = async () => { if (n){ await batch.commit(); batch = db.batch(); n = 0; } };
+  const add = async (ref, data, del) => { del ? batch.delete(ref) : batch.set(ref, data); if (++n >= 400) await flush(); };
+  for (const c of COLLS) for (const row of map[c] || []){ const { id, ...data } = row; if (id) await add(db.collection(c).doc(String(id)), data); }
+  await add(db.doc("config/app"), config || {});
+  await flush();
+  for (const f of files || []) await fbPutBlob(f.id, f.blob, f.name || "");
+}
+async function fbMigrate(){
+  const L = S.localCopy; if (!L) return;
+  S.gate = "migrating"; render(true);
+  try {
+    await fbWriteAll(L, L.config, L.files);
+    LS.set("ctrlvenc-migr", S.fbUser.uid); S.localCopy = null; S.gate = null;
+    toast("Os dados deste aparelho foram enviados para a nuvem.", 5000);
+    await fbPreloadLogos(); onCfg(); afterReady();
+  } catch(e){ S.gate = "migrate"; render(true); toast(fbErr(e), 7000); }
+}
+function fbSkipMigrate(){ LS.set("ctrlvenc-migr", S.fbUser.uid); S.localCopy = null; S.gate = null; afterReady(); }
+
+/* arquivos anexados: guardados no Firestore em pedaços (plano gratuito, sem Cloud Storage) */
+async function fbPutBlob(id, blob, name){
+  const url = await blobToDataURL(blob); const b64 = url.slice(url.indexOf(",") + 1);
+  const parts = Math.max(1, Math.ceil(b64.length / FB_CHUNK));
+  const batch = S.db.batch();
+  for (let i = 0; i < parts; i++) batch.set(S.db.collection("fileChunks").doc(id + "_" + i), { d: b64.slice(i * FB_CHUNK, (i + 1) * FB_CHUNK) });
+  batch.set(S.db.collection("files").doc(id), { name: name || "", type: blob.type || "application/octet-stream", size: blob.size, parts, createdAt: new Date().toISOString() });
+  return batch.commit();
+}
+async function fbLoadFile(id){
+  if (!id) throw new Error("sem arquivo");
+  if (S.urls[id]) return S.urls[id];
+  S.loading = S.loading || {};
+  if (S.loading[id]) return S.loading[id];
+  S.loading[id] = (async () => {
+    const meta = await S.db.collection("files").doc(id).get();
+    if (!meta.exists) throw new Error("Arquivo não encontrado.");
+    const m = meta.data(); const docs = await Promise.all(Array.from({ length: m.parts || 1 }, (_, i) => S.db.collection("fileChunks").doc(id + "_" + i).get()));
+    const b64 = docs.map(d => d.exists ? d.data().d : "").join("");
+    const blob = await (await fetch("data:" + (m.type || "application/octet-stream") + ";base64," + b64)).blob();
+    S.urls[id] = URL.createObjectURL(blob); return S.urls[id];
+  })();
+  try { return await S.loading[id]; } finally { delete S.loading[id]; }
+}
+function fbOpenFile(id){
+  const w = window.open("", "_blank");
+  if (w) try { w.document.write('<p style="font-family:system-ui,sans-serif;padding:24px">Abrindo arquivo…</p>'); } catch(e){}
+  fbLoadFile(id).then(u => { if (w) w.location.href = u; else window.location.href = u; })
+    .catch(() => { if (w) w.close(); toast("Não foi possível abrir o arquivo. Verifique a internet."); });
+}
+const fbAssets = {
+  async upload(file, { type }){
+    if (file.size > FB_MAX_FILE) throw { code: "too_large" };
+    const id = newId(); const blob = new Blob([file], { type });
+    S.urls[id] = URL.createObjectURL(blob);
+    fbBg(fbPutBlob(id, blob, file.name || ""));
+    return { id };
+  },
+  async delete(id){
+    const meta = await S.db.collection("files").doc(id).get().catch(() => null);
+    const parts = meta && meta.exists ? (meta.data().parts || 1) : 1;
+    const batch = S.db.batch();
+    for (let i = 0; i < parts; i++) batch.delete(S.db.collection("fileChunks").doc(id + "_" + i));
+    batch.delete(S.db.collection("files").doc(id));
+    fbBg(batch.commit());
+    if (S.urls[id]){ URL.revokeObjectURL(S.urls[id]); delete S.urls[id]; }
+  }
+};
+document.addEventListener("click", ev => {
+  const a = ev.target.closest && ev.target.closest('a[href^="#arquivo:"]'); if (!a) return;
+  ev.preventDefault(); ev.stopPropagation(); fbOpenFile(a.getAttribute("href").slice(9));
+}, true);
+
+/* telas da nuvem */
+function screenGate(){
+  const g = S.gate, u = S.fbUser, mode = S.gateMode || "login";
+  const tools = `<div class="auth-tools">${toolButtons()}</div>`;
+  const foot = `<footer class="foot"><div class="wrap">${esc(copyright())}</div></footer>`;
+  const head = `<h1>Controle de vencimentos</h1><p class="sub" style="margin-bottom:20px">Conexão com a nuvem</p>`;
+  let body = "";
+  if (g === "login") body = `<form class="auth-card" id="fbForm" novalidate>${head}
+    <h2>${mode === "create" ? "Criar conta da nuvem" : "Conectar este aparelho"}</h2>
+    <p class="sub">${mode === "create" ? "Crie a conta que guarda os dados na nuvem. Use um e-mail real: você vai receber um link de confirmação." : "Entre com a conta da nuvem da empresa. Isso é feito uma vez em cada computador, celular ou tablet; depois você entra com o seu usuário do sistema."}</p>
+    <p class="err" id="authErr" hidden></p>
+    <div class="f"><label for="fbEmail">E-mail</label><input id="fbEmail" name="email" type="email" autocomplete="username" autocapitalize="none" required></div>
+    <div class="f"><label for="fbPw">Senha</label><input id="fbPw" name="pw" type="password" autocomplete="${mode === "create" ? "new-password" : "current-password"}" required>${mode === "create" ? `<span class="hint">Mínimo de 6 caracteres. Não use a mesma senha do seu e-mail.</span>` : ""}</div>
+    ${mode === "create" ? `<div class="f"><label for="fbPw2">Confirmar senha</label><input id="fbPw2" name="pw2" type="password" autocomplete="new-password" required></div>` : ""}
+    <button class="btn primary" type="submit" style="width:100%;justify-content:center">${mode === "create" ? "Criar conta" : "Entrar"}</button>
+    <div class="row" style="justify-content:space-between;margin-top:14px;flex-wrap:wrap;gap:8px">
+      <button type="button" class="btn sm link" data-act="fbMode">${mode === "create" ? "Já tenho conta" : "Criar conta"}</button>
+      ${mode === "create" ? "" : `<button type="button" class="btn sm link" data-act="fbReset">Esqueci a senha</button>`}
+    </div>
+    <p class="hint" style="margin:14px 0 0"><button type="button" class="btn sm link" data-act="fbLocal" style="padding:0">Usar sem nuvem, só neste aparelho</button></p>
+  </form>`;
+  else if (g === "verify") body = `<div class="auth-card">${head}<h2>Confirme o seu e-mail</h2>
+    <p class="sub">Enviamos um link de confirmação para <b>${esc(u && u.email)}</b>. Abra o e-mail (veja também o spam), clique no link e depois volte aqui.</p>
+    <p class="err" id="authErr" hidden></p>
+    <button class="btn primary" data-act="fbCheck" style="width:100%;justify-content:center">Já confirmei</button>
+    <div class="row" style="justify-content:space-between;margin-top:14px"><button class="btn sm link" data-act="fbResend">Reenviar e-mail</button><button class="btn sm link" data-act="fbSignOut">Usar outra conta</button></div></div>`;
+  else if (g === "denied") body = `<div class="auth-card">${head}<h2>Acesso não liberado</h2>
+    <p class="sub">A conta <b>${esc(u && u.email)}</b> ainda não tem permissão para acessar os dados da empresa. Peça a um administrador do sistema para incluir este e-mail em <b>Configurações → Backup e nuvem</b>.</p>
+    <div class="row" style="justify-content:space-between"><button class="btn" data-act="fbRetry">Tentar de novo</button><button class="btn sm link" data-act="fbSignOut">Usar outra conta</button></div></div>`;
+  else if (g === "migrate"){ const L = S.localCopy || { users: [] }; const count = COLLS.filter(c => c !== "users" && c !== "mails").reduce((n, c) => n + (L[c] || []).length, 0);
+    body = `<div class="auth-card">${head}<h2>Enviar os dados deste aparelho?</h2>
+    <p class="sub">A nuvem está vazia, e este aparelho tem dados salvos: ${plural(L.users.length, "usuário", "usuários")}, ${plural(count, "cadastro", "cadastros")} e ${plural((L.files || []).length, "arquivo", "arquivos")}. Envie para a nuvem para usar os mesmos dados no computador, no celular e no tablet.</p>
+    <button class="btn primary" data-act="fbMigrate" style="width:100%;justify-content:center">Enviar dados para a nuvem</button>
+    <p class="hint" style="margin:14px 0 0"><button class="btn sm link" data-act="fbSkip" style="padding:0">Começar com a nuvem vazia</button> (os dados deste aparelho continuam guardados nele)</p></div>`; }
+  else if (g === "migrating") body = `<div class="auth-card">${head}<h2>Enviando dados…</h2><p class="sub">Não feche esta janela. Isso pode levar alguns minutos se houver muitos arquivos.</p></div>`;
+  return tools + `<div class="auth">${body}</div>` + foot;
+}
+async function fbSubmit(form){
+  const email = String(form.elements.email.value || "").trim(), pw = form.elements.pw.value;
+  if (!validEmail(email)) return authError("Informe um e-mail válido.");
+  if (!pw) return authError("Informe a senha.");
+  const btn = form.querySelector("button[type=submit]"); btn.disabled = true;
+  try {
+    if ((S.gateMode || "login") === "create"){
+      if (pw.length < 6) throw { code: "auth/weak-password" };
+      if (pw !== form.elements.pw2.value){ btn.disabled = false; return authError("As senhas não conferem."); }
+      const cred = await S.auth.createUserWithEmailAndPassword(email, pw);
+      try { await cred.user.sendEmailVerification(); } catch(e){}
+      S.gateMode = "login"; fbAuthChanged(S.auth.currentUser);
+    } else await S.auth.signInWithEmailAndPassword(email, pw);
+  } catch(e){ btn.disabled = false; authError(fbErr(e)); }
+}
+async function fbCheckVerified(){
+  const u = S.auth.currentUser; if (!u) return;
+  try { await u.reload(); if (!S.auth.currentUser.emailVerified) return authError("O e-mail ainda não foi confirmado. Clique no link que enviamos e tente de novo.");
+    await S.auth.currentUser.getIdToken(true); fbAuthChanged(S.auth.currentUser);
+  } catch(e){ authError(fbErr(e)); }
+}
+async function fbResetPw(){
+  const el = $("#fbEmail"); const email = el ? el.value.trim() : "";
+  if (!validEmail(email)) return authError("Digite o seu e-mail no campo acima e toque de novo em Esqueci a senha.");
+  try { await S.auth.sendPasswordResetEmail(email); toast("Se houver conta com este e-mail, enviamos um link para criar uma nova senha.", 6000); }
+  catch(e){ authError(fbErr(e)); }
+}
+function cfgCloud(){
+  const u = S.fbUser, list = (S.cloudAccess.emails || []).join("\n");
+  return `<div class="card" style="max-width:640px;margin-top:16px"><h3 style="margin-top:0">Nuvem (Firebase)</h3>
+    <p style="margin-top:0">Os dados ficam no banco de dados da nuvem e aparecem iguais em todos os aparelhos conectados. Este aparelho está conectado com <b>${esc(u && u.email)}</b>.</p>
+    ${isAdmin() && !S.readonly ? `<form id="fbAccessForm" novalidate><div class="f"><label for="fbAccess">E-mails liberados para conectar outros aparelhos</label>
+      <textarea id="fbAccess" name="emails" style="min-height:90px" placeholder="um e-mail por linha">${esc(list)}</textarea>
+      <span class="hint">Cada pessoa cria a própria conta da nuvem com um destes e-mails. ${esc(FB_OWNERS.join(", "))} sempre tem acesso.</span></div>
+      <button class="btn" type="submit">Salvar e-mails liberados</button></form>` : ""}
+    <div class="row" style="justify-content:flex-start;margin-top:14px"><button class="btn" data-act="fbSignOut">Desconectar este aparelho da nuvem</button></div></div>`;
+}
+async function fbSaveAccess(form){
+  const emails = [...new Set(splitEmails(form.elements.emails.value).map(e => e.toLowerCase()))];
+  const bad = emails.find(e => !validEmail(e)); if (bad) return toast(`O e-mail "${bad}" não é válido.`);
+  fbBg(S.db.doc("acesso/lista").set({ emails, updatedAt: new Date().toISOString() }));
+  S.cloudAccess = { emails }; toast("E-mails liberados salvos.");
+}
+async function fbRestore(map, config, fileRows){
+  const db = S.db; let batch = db.batch(), n = 0;
+  for (const c of COLLS) for (const row of S.data[c]){ batch.delete(db.collection(c).doc(row.id)); if (++n >= 400){ await batch.commit(); batch = db.batch(); n = 0; } }
+  if (n) await batch.commit();
+  await fbWriteAll(map, config, fileRows);
+}
+async function fbLoadAllFiles(){
+  const ids = new Set([S.cfg.logoId, S.cfg.logoDarkId, ...S.data.documents.map(d => d.assetId), ...S.data.records.map(d => d.assetId)].filter(Boolean));
+  await Promise.all([...ids].map(id => fbLoadFile(id).catch(() => null)));
+}
 
 async function boot(){
   applyTheme(); render(true);
@@ -883,6 +1145,7 @@ async function boot(){
     db.doc("config/app").onSnapshot(s => { S.cfg = s.exists ? { ...s.data() } : {}; onCfg(); done("config"); if (S.ready) render(true); }, () => done("config"));
     return;
   }
+  if (fbWanted()) return fbBoot();
   try {
     S.idb = await idbOpen(); S.backend = "local";
     for (const c of COLLS) S.data[c] = await idbAll(c);
@@ -921,10 +1184,10 @@ function onCfg(){
   document.title = company() ? "Controle de vencimentos — " + company() : "Controle de vencimentos";
   const id = S.cfg.logoId; const url = id ? Store.url(id) : null;
   const key = id ? id + "|" + url : "";
-  { const did = S.cfg.logoDarkId; S.logoDarkUrl = did && Store.url(did) !== "#" ? Store.url(did) : null; }
+  { const did = S.cfg.logoDarkId; S.logoDarkUrl = did && okUrl(Store.url(did)) ? Store.url(did) : null; }
   if (key === S.logoKey) return;
-  const did = S.cfg.logoDarkId; S.logoDarkUrl = did && Store.url(did) !== "#" ? Store.url(did) : null;
-  S.logoKey = key; S.logoUrl = url && url !== "#" ? url : null; S.logoData = null;
+  const did = S.cfg.logoDarkId; S.logoDarkUrl = did && okUrl(Store.url(did)) ? Store.url(did) : null;
+  S.logoKey = key; S.logoUrl = okUrl(url) ? url : null; S.logoData = null;
   if (!S.logoUrl) return;
   const img = new Image();
   img.onload = () => {
@@ -1104,13 +1367,13 @@ const tabAllowed = t => !t[2] || (t[2] === "@cfg" ? (can("config") || can("usuar
 const firstTab = () => (TABS.find(tabAllowed) || TABS[7])[0];
 let lastScreen = "";
 function render(force){
-  const screen = !S.ready ? "loading" : !S.data.users.length ? "setup" : !me() ? "login" : "app";
+  const screen = S.gate ? "gate-" + S.gate + "-" + (S.gateMode || "") : !S.ready ? "loading" : !S.data.users.length ? "setup" : !me() ? "login" : "app";
   if (screen !== "app" && screen === lastScreen && !force) return;
   lastScreen = screen;
   const ae = document.activeElement, fid = ae && ae.id && $("#root").contains(ae) ? ae.id : null;
   let sel = null; try { if (fid && ae.selectionStart != null) sel = [ae.selectionStart, ae.selectionEnd]; } catch(e){}
   const openMenus = [...document.querySelectorAll("details.menu[open]")].map(d => d.id);
-  $("#root").innerHTML = screen === "loading" ? screenLoading() : screen === "setup" ? screenSetup() : screen === "login" ? screenLogin() : shell();
+  $("#root").innerHTML = S.gate ? screenGate() : screen === "loading" ? screenLoading() : screen === "setup" ? screenSetup() : screen === "login" ? screenLogin() : shell();
   openMenus.forEach(id => { const d = document.getElementById(id); if (d) d.open = true; });
   if (fid){ const el = document.getElementById(fid); if (el){ el.focus(); if (sel) try { el.setSelectionRange(sel[0], sel[1]); } catch(e){} } }
 }
@@ -1580,7 +1843,7 @@ function composeMail(p){
   const v = { nome: i.person ? i.person.name.split(" ")[0] : "responsável", documento: i.typeName, referente: i.ref, vencimento: fmt(i.expiryDate), situacao: i.st.label.toLowerCase(), empresa: company() || "nossa empresa", prazo: p.stage.label.toLowerCase() };
   return { subject: fill(c.subject || DEFAULT_SUBJECT, v), body: fill(c.body || DEFAULT_BODY, v) };
 }
-const emailjsReady = () => { const c = mailCfg(); return S.backend !== "cloud" && c.serviceId && c.templateId && c.publicKey; };
+const emailjsReady = () => { const c = mailCfg(); return (S.backend !== "cloud" || S.fb) && c.serviceId && c.templateId && c.publicKey; };
 async function sendEmailJS(p){
   const c = mailCfg(), m = composeMail(p);
   const res = await fetch("https://api.emailjs.com/api/v1.0/email/send", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1610,7 +1873,7 @@ function mailtoUrl(p){ const m = composeMail(p); const cc = ccList(); return "ma
 function viewEmails(){
   const pend = pendingMails(), up = upcomingMails(30), env = can("email.enviar") && !S.readonly, auto = emailjsReady();
   const hist = [...S.data.mails].sort((a,b) => String(b.sentAt).localeCompare(String(a.sentAt))).slice(0, 60);
-  const how = S.backend === "cloud"
+  const how = S.backend === "cloud" && !S.fb
     ? `Os avisos aparecem aqui no dia programado. Use <b>Enviar</b> para abrir a mensagem pronta no seu programa de e-mail. O envio automático funciona na versão baixada do sistema.`
     : auto ? (mailCfg().auto ? `O envio automático está <b>ligado</b>: sempre que o sistema estiver aberto, os avisos do dia são enviados sozinhos (ao entrar e a cada 30 minutos).` : `O envio automático está configurado, mas <b>desligado</b>. Ligue em Configurar e-mails.`)
     : `Os avisos aparecem aqui no dia programado. Para enviar automaticamente, configure um serviço de envio em <b>Configurar e-mails</b>.`;
@@ -1636,7 +1899,7 @@ function viewEmails(){
 
 /* ================= configurações ================= */
 function viewConfig(){
-  const subs = [["empresa", "Empresa e logo", can("config")], ["usuarios", "Usuários", can("usuarios")], ["matriz", "Matriz de acesso", true], ["backup", "Backup", can("backup")]].filter(s => s[2]);
+  const subs = [["empresa", "Empresa e logo", can("config")], ["usuarios", "Usuários", can("usuarios")], ["matriz", "Matriz de acesso", true], ["backup", S.fb ? "Backup e nuvem" : "Backup", can("backup") || (S.fb && isAdmin())]].filter(s => s[2]);
   if (!subs.some(s => s[0] === S.cfgTab)) S.cfgTab = subs[0][0];
   const nav = `<div class="subnav">${subs.map(([k,l]) => `<button aria-pressed="${S.cfgTab === k}" data-act="cfgTab" data-k="${k}">${l}</button>`).join("")}</div>`;
   return `<h2>Configurações</h2><p class="sub">Dados da empresa, usuários e permissões.</p>${nav}` + ({ empresa: cfgEmpresa, usuarios: cfgUsers, matriz: cfgMatrix, backup: cfgBackup })[S.cfgTab]();
@@ -1669,11 +1932,16 @@ function cfgMatrix(){
   ${ed ? `<div style="margin-top:12px"><button class="btn" data-act="matrixReset">Restaurar padrão</button></div>` : ""}`;
 }
 function cfgBackup(){
+  if (S.fb) return (can("backup") ? `<div class="card" style="max-width:640px">
+    <p style="margin-top:0">Os dados ficam na nuvem. O backup em arquivo é uma cópia extra de segurança: faça de vez em quando e guarde em local seguro.</p>
+    <p class="hint">O backup inclui cadastros, usuários, configurações e todos os arquivos anexados.</p>
+    <div class="row" style="justify-content:flex-start"><button class="btn primary" data-act="backup">Fazer backup</button>${!S.readonly ? `<button class="btn" data-act="restore">Restaurar backup</button>` : ""}</div></div>` : "") + cfgCloud();
   if (S.backend === "cloud") return `<div class="card" style="max-width:640px"><p style="margin:0">Nesta versão online os dados ficam guardados no Claude. O backup em arquivo está disponível na versão baixada do sistema.</p></div>`;
   return `<div class="card" style="max-width:640px">
     <p style="margin-top:0">Os dados ficam salvos neste navegador. Faça backup com frequência e guarde o arquivo em local seguro (pasta de rede ou nuvem).</p>
     <p class="hint">O backup inclui cadastros, usuários, configurações e todos os arquivos anexados.</p>
-    <div class="row" style="justify-content:flex-start"><button class="btn primary" data-act="backup">Fazer backup</button>${!S.readonly ? `<button class="btn" data-act="restore">Restaurar backup</button>` : ""}</div></div>`;
+    <div class="row" style="justify-content:flex-start"><button class="btn primary" data-act="backup">Fazer backup</button>${!S.readonly ? `<button class="btn" data-act="restore">Restaurar backup</button>` : ""}</div></div>`
+    + (window.firebase && LS.get("ctrlvenc-mode") === "local" ? `<div class="card" style="max-width:640px;margin-top:16px"><p style="margin-top:0">Este aparelho está usando o sistema <b>sem nuvem</b>. Conecte para usar os mesmos dados em todos os aparelhos.</p><button class="btn primary" data-act="fbConnect">Conectar à nuvem</button></div>` : "");
 }
 function logoPair(src, mode, altSrc){
   const dark = mode === "alt" && altSrc ? `<img src="${esc(altSrc)}" alt="">` : `<img src="${esc(src)}" class="${mode === "white" ? "logo-white" : mode === "none" ? "" : "logo-invert"}" alt="">`;
@@ -1682,6 +1950,7 @@ function logoPair(src, mode, altSrc){
 async function backup(){
   try {
     toast("Gerando backup…");
+    if (S.fb) await fbLoadAllFiles();
     const files = await Promise.all(Object.entries(S.urls).map(async ([id, u]) => { try { return { id, name: "", data: await blobToDataURL(await (await fetch(u)).blob()) }; } catch(e){ return null; } }));
     const out = { app: "controle-vencimentos", version: 3, createdAt: new Date().toISOString(), config: S.cfg, ...S.data, files: files.filter(Boolean) };
     await offerFile("backup-vencimentos-" + todayISO() + ".json", new Blob([JSON.stringify(out)], { type: "application/json" }));
@@ -1697,7 +1966,8 @@ function restorePick(){
     try {
       const map = { employees: data.employees, thirds: data.thirds, docTypes: data.docTypes || data.types, documents: data.documents, records: data.records, users: data.users, mails: data.mails };
       const fileRows = await Promise.all((data.files || []).map(async x => ({ id: x.id, name: x.name, blob: await (await fetch(x.data)).blob() })));
-      if (S.backend === "local"){
+      if (S.fb){ toast("Restaurando na nuvem…", 8000); await fbRestore(map, data.config || {}, fileRows); }
+      else if (S.backend === "local"){
         for (const c of [...COLLS, "config", "files"]) await idbTx(c, "readwrite", s => s.clear());
         for (const c of COLLS) await idbTx(c, "readwrite", s => (map[c] || []).forEach(r => s.put(r)));
         if (data.config) await idbTx("config", "readwrite", s => s.put({ id: "app", ...data.config }));
@@ -2077,7 +2347,7 @@ function companyDialog(){
 
 /* ---- configuração de e-mail ---- */
 function mailCfgDialog(){
-  const c = mailCfg(), local = S.backend !== "cloud";
+  const c = mailCfg(), local = S.backend !== "cloud" || S.fb;
   openDialog("Configurar avisos por e-mail", `
     <div class="f"><label for="mCc">Sempre enviar cópia para</label><input id="mCc" name="cc" value="${esc(c.cc)}" placeholder="rh@empresa.com, seguranca@empresa.com"><span class="hint">Separe por vírgula. Recebem cópia de todos os avisos.</span></div>
     <div class="f"><label for="mSub">Assunto</label><input id="mSub" name="subject" value="${esc(c.subject || DEFAULT_SUBJECT)}"></div>
@@ -2129,7 +2399,7 @@ const findPending = id => pendingMails().find(p => p.id === id);
 function openItem(kind, id){
   const coll = kind === "reg" ? S.data.records : S.data.documents, x = coll.find(r => r.id === id); if (!x) return;
   if (can(kind === "reg" ? "reg.editar" : "doc.editar") && !S.readonly) return kind === "reg" ? regDialog(x) : docDialog(x);
-  if (x.assetId) window.open(Store.url(x.assetId), "_blank"); else toast("Você não tem permissão para editar este item.");
+  if (x.assetId){ if (S.fb) fbOpenFile(x.assetId); else window.open(Store.url(x.assetId), "_blank"); } else toast("Você não tem permissão para editar este item.");
 }
 document.addEventListener("click", ev => {
   document.querySelectorAll("details.menu[open]").forEach(d => { if (!d.contains(ev.target)) d.open = false; });
@@ -2142,6 +2412,16 @@ document.addEventListener("click", ev => {
     case "theme": toggleTheme(); break;
     case "fullscreen": toggleFullscreen(); break;
     case "logout": logout(); break;
+    case "fbMode": S.gateMode = (S.gateMode || "login") === "create" ? "login" : "create"; render(true); break;
+    case "fbReset": fbResetPw(); break;
+    case "fbLocal": if (confirm("Usar o sistema só neste aparelho? Os dados não serão compartilhados com os outros aparelhos.")){ LS.set("ctrlvenc-mode", "local"); location.reload(); } break;
+    case "fbConnect": LS.set("ctrlvenc-mode", null); location.reload(); break;
+    case "fbCheck": fbCheckVerified(); break;
+    case "fbResend": if (S.auth.currentUser) S.auth.currentUser.sendEmailVerification().then(() => toast("E-mail de confirmação reenviado.")).catch(e => authError(fbErr(e))); break;
+    case "fbSignOut": if (S.gate || confirm("Desconectar este aparelho da nuvem? Para usar de novo será preciso entrar com a conta da nuvem.")){ logout(); S.auth.signOut(); } break;
+    case "fbRetry": S.auth.currentUser && S.auth.currentUser.getIdToken(true).finally(() => fbAuthChanged(S.auth.currentUser)); break;
+    case "fbMigrate": fbMigrate(); break;
+    case "fbSkip": fbSkipMigrate(); break;
     case "myPw": myPwDialog(); break;
     case "newDoc": if (!guard("doc.criar")) break; if (!typesOf("doc").length){ toast("Cadastre primeiro os tipos de documento."); S.tab = "tipos"; render(); } else if (!S.data.employees.length && !S.data.thirds.length){ toast("Cadastre primeiro um funcionário ou terceiro."); } else { const pk = S.tab === "documentos" && S.f.docs.person ? S.f.docs.person.split(":") : null; docDialog(null, pk ? { kind: pk[0], id: pk[1] } : null); } break;
     case "newReg": if (!guard("reg.criar")) break; if (!typesOf("reg").length){ toast("Cadastre primeiro os tipos de registro."); S.tab = "registros"; render(); } else regDialog(); break;
@@ -2195,6 +2475,8 @@ document.addEventListener("input", ev => { const ds = ev.target.dataset || {}; i
 document.addEventListener("submit", ev => {
   if (ev.target.id === "loginForm"){ ev.preventDefault(); doLogin(ev.target); }
   if (ev.target.id === "setupForm"){ ev.preventDefault(); doSetup(ev.target); }
+  if (ev.target.id === "fbForm"){ ev.preventDefault(); fbSubmit(ev.target); }
+  if (ev.target.id === "fbAccessForm"){ ev.preventDefault(); fbSaveAccess(ev.target); }
 });
 if (window.matchMedia) try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => render(true)); } catch(e){}
 setInterval(() => { const t = todayISO(); if (t !== S.day){ S.day = t; if (me()) render(); } }, 60000); S.day = todayISO();

@@ -1,0 +1,22 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function verificado() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    function emailAtual() {
+      return request.auth.token.email.lower();
+    }
+    function dono() {
+      return verificado() && emailAtual() in ['eguilherme88@gmail.com'];
+    }
+    function autorizado() {
+      return dono() || (verificado()
+        && exists(/databases/$(database)/documents/acesso/lista)
+        && emailAtual() in get(/databases/$(database)/documents/acesso/lista).data.emails);
+    }
+    match /{colecao}/{id} {
+      allow read, write: if autorizado();
+    }
+  }
+}
